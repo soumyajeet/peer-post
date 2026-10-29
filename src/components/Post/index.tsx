@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { getCurrentUser, type CurrentUser } from '../../data/auth';
+import { useOnlineUsers } from '../../hooks/useOnlineUsers';
 import { getPosts, savePost, updatePostLikes, type PostRecord } from '../../data/posts';
+import { isPostMember, joinPost } from '../../data/postMembership';
+import DirectChat from '../DirectChat';
+import UserProfile from '../UserProfile';
 import './Post.css';
 
 type Reply = {
@@ -73,6 +77,7 @@ type LoadedPostData = {
   currentUser: CurrentUser | null;
   comments: Comment[];
   isLiked: boolean;
+  isJoined: boolean;
   error: string;
 };
 
@@ -95,6 +100,7 @@ const loadPostData = (postId: string): LoadedPostData => {
       currentUser,
       comments: comments as Comment[],
       isLiked: Array.isArray(likedPosts) && likedPosts.includes(postId),
+      isJoined: currentUser ? isPostMember(postId, currentUser.username) : false,
       error: '',
     };
   } catch (error) {
@@ -103,6 +109,7 @@ const loadPostData = (postId: string): LoadedPostData => {
       currentUser: null,
       comments: [],
       isLiked: false,
+      isJoined: false,
       error: error instanceof Error ? error.message : 'Unable to load this post',
     };
   }
@@ -135,6 +142,8 @@ const PostDetail = ({ postId }: { postId: string }) => {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [isLiked, setIsLiked] = useState(loadedData.isLiked);
+  const [isJoined, setIsJoined] = useState(loadedData.isJoined);
+  const [activeUsername, setActiveUsername] = useState<string | null>(null);
   const [commentDraft, setCommentDraft] = useState('');
   const [replyDraft, setReplyDraft] = useState('');
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
@@ -147,6 +156,8 @@ const PostDetail = ({ postId }: { postId: string }) => {
   const objectUrlsRef = useRef<string[]>([]);
 
   const isAdmin = currentUser?.role === 'admin';
+  const canParticipate = isAdmin || isJoined;
+  const onlineUsers = useOnlineUsers(currentUser, postId);
   const youtubeEmbedUrl = post ? getYoutubeEmbedUrl(post.youtubeUrl) : '';
 
   useEffect(() => () => {
@@ -163,9 +174,33 @@ const PostDetail = ({ postId }: { postId: string }) => {
     }
   };
 
+  const joinCurrentPost = () => {
+    if (!currentUser || currentUser.role === 'admin') {
+      return;
+    }
+
+    try {
+      joinPost(postId, currentUser.username);
+      setIsJoined(true);
+      setErrorMessage('');
+      setStatusMessage('You joined this post. You can now comment and reply.');
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to join this post');
+    }
+  };
+
   const savePostChanges = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!post || !isAdmin) {
+    let activeUser: CurrentUser | null;
+    try {
+      activeUser = getCurrentUser();
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Unable to verify edit permissions');
+      return;
+    }
+
+    if (!post || !isAdmin || activeUser?.role !== 'admin') {
+      setErrorMessage('Only an admin can edit this post.');
       return;
     }
 
@@ -198,6 +233,11 @@ const PostDetail = ({ postId }: { postId: string }) => {
 
   const addComment = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!canParticipate) {
+      setErrorMessage('Join this post before commenting.');
+      return;
+    }
+
     const text = commentDraft.trim();
     if (!text) {
       return;
@@ -216,6 +256,11 @@ const PostDetail = ({ postId }: { postId: string }) => {
 
   const addReply = (event: FormEvent<HTMLFormElement>, commentId: string) => {
     event.preventDefault();
+    if (!canParticipate) {
+      setErrorMessage('Join this post before replying.');
+      return;
+    }
+
     const text = replyDraft.trim();
     if (!text) {
       return;
@@ -286,6 +331,12 @@ const PostDetail = ({ postId }: { postId: string }) => {
   };
 
   const addFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    if (!isAdmin) {
+      setErrorMessage('Only an admin can attach files.');
+      event.target.value = '';
+      return;
+    }
+
     const selectedFiles = Array.from(event.target.files ?? []);
     const invalidFiles = selectedFiles.filter((file) => !isAllowedFile(file));
 
@@ -333,7 +384,10 @@ const PostDetail = ({ postId }: { postId: string }) => {
       {errorMessage && <p className="post-feedback post-feedback-error" role="alert">{errorMessage}</p>}
       {statusMessage && <p className="post-feedback" role="status">{statusMessage}</p>}
 
-      <article className="post-detail">
+      <div className="post-layout">
+        <UserProfile user={currentUser} />
+
+        <article className="post-detail">
         <div className={`post-detail-thumbnail thumbnail-${post.style}`}>
           <span className="thumbnail-label">{post.category}</span>
           <span className="post-detail-title">{post.title}</span>
@@ -367,6 +421,24 @@ const PostDetail = ({ postId }: { postId: string }) => {
             )}
           </div>
           <p className="post-detail-description">{post.content}</p>
+
+          {!isAdmin && (
+            <section className="post-join-panel" aria-label="Join post discussion">
+              <div>
+                <strong>{isJoined ? 'You joined this post' : 'Join the conversation'}</strong>
+                <p>
+                  {isJoined
+                    ? 'You can comment on this post and reply to other comments.'
+                    : 'Join this post to add comments and reply to the discussion.'}
+                </p>
+              </div>
+              {!isJoined && (
+                <button className="post-primary-button" type="button" onClick={joinCurrentPost}>
+                  Join
+                </button>
+              )}
+            </section>
+          )}
 
           <div className="post-actions">
             <button
@@ -455,19 +527,23 @@ const PostDetail = ({ postId }: { postId: string }) => {
 
           <section className="post-comments" aria-labelledby="comments-heading">
             <h2 id="comments-heading">Comments <span>{comments.length}</span></h2>
-            <form className="comment-form" onSubmit={addComment}>
-              <label className="visually-hidden" htmlFor="new-comment">Write a comment</label>
-              <textarea
-                id="new-comment"
-                rows={3}
-                value={commentDraft}
-                onChange={(event) => setCommentDraft(event.target.value)}
-                placeholder="Share your thoughts..."
-              />
-              <button className="post-primary-button" type="submit" disabled={!commentDraft.trim()}>
-                Post comment
-              </button>
-            </form>
+            {canParticipate ? (
+              <form className="comment-form" onSubmit={addComment}>
+                <label className="visually-hidden" htmlFor="new-comment">Write a comment</label>
+                <textarea
+                  id="new-comment"
+                  rows={3}
+                  value={commentDraft}
+                  onChange={(event) => setCommentDraft(event.target.value)}
+                  placeholder="Share your thoughts..."
+                />
+                <button className="post-primary-button" type="submit" disabled={!commentDraft.trim()}>
+                  Post comment
+                </button>
+              </form>
+            ) : (
+              <p className="comments-join-prompt">Join this post to comment or reply.</p>
+            )}
 
             {comments.length === 0 ? (
               <p className="comments-empty">No comments yet. Start the conversation.</p>
@@ -484,17 +560,19 @@ const PostDetail = ({ postId }: { postId: string }) => {
                                         <time>{comment.createdAt}</time>
                       </p>
                       <p className="comment-text">{comment.text}</p>
-                      <button
-                        className="reply-toggle"
-                        type="button"
-                        onClick={() => {
-                          setReplyingTo(replyingTo === comment.id ? null : comment.id);
-                          setReplyDraft('');
-                        }}
-                      >
-                        Reply
-                      </button>
-                      {replyingTo === comment.id && (
+                      {canParticipate && (
+                        <button
+                          className="reply-toggle"
+                          type="button"
+                          onClick={() => {
+                            setReplyingTo(replyingTo === comment.id ? null : comment.id);
+                            setReplyDraft('');
+                          }}
+                        >
+                          Reply
+                        </button>
+                      )}
+                      {canParticipate && replyingTo === comment.id && (
                         <form className="reply-form" onSubmit={(event) => addReply(event, comment.id)}>
                           <label className="visually-hidden" htmlFor={`reply-${comment.id}`}>
                             Reply to {comment.author}
@@ -530,7 +608,51 @@ const PostDetail = ({ postId }: { postId: string }) => {
             )}
           </section>
         </div>
-      </article>
+        </article>
+
+        <aside className="post-participants" aria-labelledby="post-participants-heading">
+          <div className="post-participants-header">
+            <div>
+              <p className="post-detail-category">IN THIS POST</p>
+              <h2 id="post-participants-heading">People viewing</h2>
+            </div>
+            <span>{onlineUsers.length}</span>
+          </div>
+          {onlineUsers.length === 0 ? (
+            <p className="post-participants-empty">No other users are viewing this post right now.</p>
+          ) : (
+            <ul className="post-participants-list">
+              {onlineUsers.map((user) => (
+                <li key={user.username}>
+                  <span className="post-participant-avatar" aria-hidden="true">
+                    {user.username.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="post-participant-details">
+                    <span className="post-participant-name">{user.username}</span>
+                    <span className="post-participant-role">{user.isDemo ? 'demo user' : user.role}</span>
+                  </span>
+                  <button
+                    className="post-secondary-button"
+                    type="button"
+                    onClick={() => setActiveUsername(user.username)}
+                    aria-label={`Chat privately with ${user.username}`}
+                  >
+                    Chat
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </aside>
+      </div>
+      {activeUsername && currentUser && (
+        <DirectChat
+          username={currentUser.username}
+          peerUsername={activeUsername}
+          postId={postId}
+          onClose={() => setActiveUsername(null)}
+        />
+      )}
     </main>
   );
 };

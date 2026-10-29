@@ -9,6 +9,10 @@ export const setCurrentUser = (user: CurrentUser): void => {
   window.sessionStorage.setItem(storageKey, JSON.stringify(user));
 };
 
+export const clearCurrentUser = (): void => {
+  window.sessionStorage.removeItem(storageKey);
+};
+
 export const getCurrentUser = (): CurrentUser | null => {
   const savedUser = window.sessionStorage.getItem(storageKey);
   if (!savedUser) {

@@ -31,7 +31,10 @@ const Login = () => {
 
     const normalizedUsernameLowerCase = normalizedUsername.toLowerCase();
     const isAdminLogin = normalizedUsernameLowerCase === 'admin' && enteredPassword === 'password';
-    const isViewerLogin = normalizedUsernameLowerCase === 'user' && enteredPassword === 'password';
+    const isViewerLogin = (
+      ['user', 'student'].includes(normalizedUsernameLowerCase)
+      && enteredPassword === 'password'
+    );
 
     if (!isAdminLogin && !isViewerLogin) {
       setErrorRprt('Invalid username or password');
@@ -71,7 +74,7 @@ const Login = () => {
                     Login
                 </Button>
                 <Typography variant="caption" color="text.secondary">
-                  Demo accounts: admin / password (editor) or user / password (viewer).
+                  Demo accounts: admin / password (editor), user / password or student / password (viewer).
                 </Typography>
             </Stack>
 
